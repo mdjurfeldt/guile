@@ -33,9 +33,10 @@
   #:use-module ((language tree-il primitives)
                 :select (add-interesting-primitive!))
   #:export-syntax (define-class class standard-define-class
-                    define-generic define-accessor define-method
+                    define-generic define-accessor
+                    define-method define-method*
                     define-extended-generic define-extended-generics
-                    method)
+                    method method*)
   #:export ( ;; The root of everything.
             <top>
             <class> <object>
@@ -2020,8 +2021,7 @@ function."
        (else
         (let lp ((specs specs) (types types))
           (cond
-           ((null? specs)
-            (or (null? types) (method-keyword-formals? m)))
+           ((null? specs) (null? types))
            ((not (pair? specs)) #t)
            ((null? types) #f)
            (else
@@ -2043,6 +2043,36 @@ function."
 
 (define (toplevel-define! name val)
   (module-define! (current-module) name val))
+
+;;;
+;;; The GOOPS API would have been simpler by introducing keyword formals
+;;; in define-method itself, but in order to align with lambda* and
+;;; define*, we introduce method* and define-method* in parallel to
+;;; method and define-method.
+;;;
+;;; There is some code repetition here. The motivation for that is to
+;;; pay some here in order to speed up loading and compilation of larger
+;;; chunks of GOOPS code as well as to make sure that method*:s are as
+;;; efficient as can be.
+;;;
+;;; A more elegant solution would have been to use something akin to
+;;; Mark H. Weavers macro:
+;;;
+;;; (define-syntax define-method*
+;;;   (lambda (x)
+;;;     (syntax-case x ()
+;;;       ((_ (generic arg-spec ... . tail) body ...)
+;;;        (let-values (((required-arg-specs other-arg-specs)
+;;;                      (break (compose keyword? syntax->datum)
+;;;                             #'(arg-spec ...))))
+;;;          #`(define-method (generic #,@required-arg-specs . rest)
+;;;              (apply (lambda* (#,@other-arg-specs . tail)
+;;;                       body ...)
+;;;                     rest)))))))
+;;;
+;;; With the current state of the compiler, this results in slower code
+;;; than the implementation below since the apply call isn't eliminated.
+;;;
 
 (define-syntax define-method
   (syntax-rules (setter)
@@ -2066,8 +2096,27 @@ function."
          (toplevel-define! 'name (make <generic> #:name 'name)))
        (add-method! name (method args body ...))))))
 
-(define-syntax method
-  (lambda (x)
+(define-syntax define-method*
+  (syntax-rules (setter)
+    ((_ ((setter name) . args) body ...)
+     (begin
+       (when (or (not (defined? 'name))
+                 (not (is-a? name <accessor>)))
+         (toplevel-define! 'name
+                           (ensure-accessor
+                            (if (defined? 'name) name #f) 'name)))
+       (add-method! (setter name) (method* args body ...))))
+    ((_ (name . args) body ...)
+     (begin
+       (when (or (not (defined? 'name))
+                 (not name))
+         (toplevel-define! 'name (make <generic> #:name 'name)))
+       (add-method! name (method* args body ...))))))
+
+;;; This section of helpers is used by both the method and method* syntax
+;;;
+(eval-when (expand load eval)
+  
     ;; parse-formals METHOD-FORMALS
     ;;
     ;; return (FORMALS SPECIALIZERS KEYWORD-FORMALS)
@@ -2087,7 +2136,7 @@ function."
     ;; are not specializable (which also corresponds to CLOS
     ;; functionality).
     ;;
-    (define (parse-formals method-formals)
+    (define (parse-keyword-formals method-formals)
       (let lp ((ls method-formals) (formals '()) (specializers '()))
         (syntax-case ls ()
           (((f s) . rest)
@@ -2103,9 +2152,8 @@ function."
           ((f . rest)
            (keyword? (syntax->datum #'f))
            (list (reverse formals)
-                 (reverse (cons #''() specializers)) ;to be cons*:ed
+                 (reverse (cons #'<top> specializers)) ;to be cons*:ed
                  (cons #'f #'rest)))
-
           (()
            (list (reverse formals)
                  (reverse (cons #''() specializers))
@@ -2115,6 +2163,27 @@ function."
            (list (append (reverse formals) #'tail)
                  (reverse (cons #'<top> specializers))
                  '())))))
+
+    (define (parse-formals method-formals)
+      (let lp ((ls method-formals) (formals '()) (specializers '()))
+        (syntax-case ls ()
+          (((f s) . rest)
+           (and (identifier? #'f) (identifier? #'s))
+           (lp #'rest
+               (cons #'f formals)
+               (cons #'s specializers)))
+          ((f . rest)
+           (identifier? #'f)
+           (lp #'rest
+               (cons #'f formals)
+               (cons #'<top> specializers)))
+          (()
+           (list (reverse formals)
+                 (reverse (cons #''() specializers))))
+          (tail
+           (identifier? #'tail)
+           (list (append (reverse formals) #'tail)
+                 (reverse (cons #'<top> specializers)))))))
 
     (define (find-free-id exp referent)
       (syntax-case exp ()
@@ -2218,12 +2287,40 @@ function."
                     (compute-make-procedure formals keyword-formals body id))
             (values (compute-procedure formals keyword-formals body)
                     #'#f))))
+    )
 
+(define-syntax method
+  (lambda (x)
+    (syntax-case x ()
+      ((_ formals) #'(method formals (if #f #f)))
+      ((_ formals body0 body1 ...)
+       (with-syntax (((formals (specializer ...))
+                      (parse-formals #'formals)))
+         (call-with-values
+             (lambda ()
+               (compute-procedures #'formals
+                                   '()
+                                   #'(body0 body1 ...)))
+           (lambda (procedure make-procedure)
+             (with-syntax ((procedure procedure)
+                           (make-procedure make-procedure))
+               #`(make <method>
+                   #:specializers (cons* specializer ...) ;yes, this
+                   ;; The cons* is needed to get the value of each
+                   ;; specializer.
+                   #:formals 'formals ;might be improper
+                   #:keyword-formals? #f
+                   #:body '(body0 body1 ...)
+                   #:make-procedure make-procedure
+                   #:procedure procedure)))))))))
+
+(define-syntax method*
+  (lambda (x)
     (syntax-case x ()
       ((_ formals) #'(method formals (if #f #f)))
       ((_ formals body0 body1 ...)
        (with-syntax (((formals (specializer ...) keyword-formals)
-                      (parse-formals #'formals)))
+                      (parse-keyword-formals #'formals)))
          (call-with-values
              (lambda ()
                (compute-procedures #'formals
@@ -2233,9 +2330,7 @@ function."
              (with-syntax ((procedure procedure)
                            (make-procedure make-procedure))
                #`(make <method>
-                   #:specializers (cons* specializer ...) ;yes, this
-                   ;; The cons* is needed to get at the value of each
-                   ;; specializer.
+                   #:specializers (cons* specializer ...)
                    #:formals (if (null? 'keyword-formals)
                                  'formals ;might be improper
                                  (append 'formals 'keyword-formals))
