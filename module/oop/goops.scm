@@ -136,7 +136,7 @@
             class-slots
             generic-function-name
             generic-function-methods method-generic-function
-            method-specializers method-formals method-keyword-formals?
+            method-specializers method-formals
             primitive-generic-generic enable-primitive-generic!
             method-procedure accessor-method-slot-definition
             make find-method get-keyword))
@@ -1053,7 +1053,6 @@ slots as we go."
   specializers
   procedure
   formals
-  keyword-formals?
   body
   make-procedure)
 (define-standard-class <accessor-method> (<method>)
@@ -1158,7 +1157,6 @@ function."
                     (#:specializers specializers ())
                     (#:procedure procedure #f)
                     (#:formals formals ())
-                    (#:keyword-formals? keyword-formals? #f)
                     (#:body body ())
                     (#:make-procedure make-procedure #f))))
        ((memq <class> (class-precedence-list class))
@@ -2116,7 +2114,7 @@ function."
 ;;; This section of helpers is used by both the method and method* syntax
 ;;;
 (eval-when (expand load eval)
-  
+
     ;; parse-formals METHOD-FORMALS
     ;;
     ;; return (FORMALS SPECIALIZERS KEYWORD-FORMALS)
@@ -2309,7 +2307,6 @@ function."
                    ;; The cons* is needed to get the value of each
                    ;; specializer.
                    #:formals 'formals ;might be improper
-                   #:keyword-formals? #f
                    #:body '(body0 body1 ...)
                    #:make-procedure make-procedure
                    #:procedure procedure)))))))))
@@ -2334,7 +2331,6 @@ function."
                    #:formals (if (null? 'keyword-formals)
                                  'formals ;might be improper
                                  (append 'formals 'keyword-formals))
-                   #:keyword-formals? (not (null? 'keyword-formals))
                    #:body '(body0 body1 ...)
                    #:make-procedure make-procedure
                    #:procedure procedure)))))))))
@@ -2456,9 +2452,6 @@ function."
 
 (define-method (method-formals (m <method>))
   (slot-ref m 'formals))
-
-(define-method (method-keyword-formals? (m <method>))
-  (slot-ref m 'keyword-formals?))
 
 ;;;
 ;;; Slots
@@ -3013,7 +3006,6 @@ var{initargs}."
   (slot-set! method 'procedure
              (get-keyword #:procedure initargs #f))
   (slot-set! method 'formals (get-keyword #:formals initargs '()))
-  (slot-set! method 'keyword-formals? (get-keyword #:keyword-formals? initargs #f))
   (slot-set! method 'body (get-keyword #:body initargs '()))
   (slot-set! method 'make-procedure (get-keyword #:make-procedure initargs #f)))
 
