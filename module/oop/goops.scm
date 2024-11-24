@@ -2197,21 +2197,22 @@ function."
     (define (compute-procedure formals keyword-formals body)
       (syntax-case body ()
         ((body0 ...)
-         (let ((formals (if (null? keyword-formals)
-                            formals
-                            (append formals keyword-formals))))
-           (with-syntax ((formals formals))
-             #`(lambda* formals body0 ...))))))
+         (if (null? keyword-formals)
+             (with-syntax ((formals formals))
+               #'(lambda formals body0 ...))
+             (let ((formals (append formals keyword-formals)))
+               (with-syntax ((formals formals))
+                 #'(lambda* formals body0 ...)))))))
 
     ;; ->formal-ids FORMALS
     ;;
     ;; convert FORMALS into formal-ids format, which is a cell where the
     ;; car is the list of car:s in FORMALS and the cdr is the cdr of the
-    ;; last cell in FORMALS.
+    ;; last cell in FORMALS, i.e. the final tail.
     ;;
-    ;; The motivation for this format is to determine at low cost if
-    ;; FORMALS is improper or not and to easily be able to generate the
-    ;; corresponding next-method call.
+    ;; The motivation for this format is to easily determine if FORMALS
+    ;; is improper or not in order to generate the corresponding
+    ;; next-method call.
     ;;
     (define (->formal-ids formals)
       (let lp ((ls formals) (out '()))
@@ -2248,31 +2249,43 @@ function."
     (define (compute-make-procedure formals keyword-formals body next-method)
       (syntax-case body ()
         ((body ...)
-         (let ((formals (if (null? keyword-formals)
-                            formals     ;might be improper
-                            (append formals keyword-formals)))
-               (formal-ids
-                (if (null? keyword-formals)
-                    (->formal-ids formals)
-                    (let ((kw-formal-ids (->keyword-formal-ids keyword-formals)))
-                      ;; input and result in formals-ids format
-                      (cons (append formals (car kw-formal-ids))
-                            (cdr kw-formal-ids))))))
-           (with-syntax ((next-method next-method))
-             (syntax-case formals ()
-               (formals
-                #`(lambda (real-next-method)
-                    (lambda* formals
-                      (let ((next-method
-                             (lambda args
-                               (if (null? args)
-                                   #,(if (null? (cdr formal-ids))
-                                         #`(real-next-method #,@(car formal-ids))
-                                         #`(apply real-next-method
-                                                  #,@(car formal-ids)
-                                                  #,(cdr formal-ids)))
-                                   (apply real-next-method args)))))
-                        body ...))))))))))
+         (call-with-values
+             (lambda ()
+               (if (null? keyword-formals)
+                   (values #'lambda
+                           formals
+                           (->formal-ids formals))
+                   (values #'lambda*
+                           (append formals keyword-formals)
+                           (let ((keyword-formal-ids
+                                  ;; filter out the identifiers
+                                  (->keyword-formal-ids keyword-formals)))
+                             ;; input and result in formals-ids format
+                             (cons (append formals (car keyword-formal-ids))
+                                   (cdr keyword-formal-ids))))))
+           (lambda (lambda-type formals formal-ids)
+             (with-syntax ((next-method next-method))
+               (syntax-case formals ()
+                 (formals
+                  #`(lambda (real-next-method)
+                      (#,lambda-type    ;lambda or lambda*
+                       formals
+                       (let ((next-method
+                              (lambda args
+                                (if (null? args)
+                                    ;; We have (next-method) and need to
+                                    ;; pass on the arguments to the method.
+                                    #,(if (null? (cdr formal-ids))
+                                          ;; proper list of identifiers
+                                          #`(real-next-method
+                                             #,@(car formal-ids))
+                                          ;; last identifier is a rest list
+                                          #`(apply real-next-method
+                                                   #,@(car formal-ids)
+                                                   #,(cdr formal-ids)))
+                                    ;; user passes arguments to next-method
+                                    (apply real-next-method args)))))
+                         body ...)))))))))))
 
     (define (compute-procedures formals keyword-formals body)
       ;; So, our use of this is broken, because it operates on the
