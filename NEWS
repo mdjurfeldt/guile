@@ -20,6 +20,14 @@ downright unusable (e.g., <https://bugs.gnu.org/72378>), non-conforming
 (e.g., <https://bugs.gnu.org/72383>), or buggy (e.g.,
 <https://bugs.gnu.org/72372>).
 
+** GOOPS: Introduce new forms method* and define-method*
+
+The module (oop goops) now exports method* and define-method* which are
+the counterparts of lambda* and define* in they provide support for
+advanced argument handling such as optional and keyword arguments. The
+implementation fully supports (next-method) calls, also for keyword
+arguments. The new syntax is documented in the Guile Reference manual.
+
 * Changes to the distribution
 
 * Bug fixes
