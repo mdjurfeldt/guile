@@ -727,7 +727,8 @@ have two parameters where the first parameter is an instance of the
 * Accessors::
 * Extending Primitives::
 * Merging Generics::
-* Next-method::                 
+* Next-method::
+* method* and define-method*::           Advanced argument handling
 * Generic Function and Method Examples::                     
 * Handling Invocation Errors::
 @end menu
@@ -902,6 +903,200 @@ Number is in range
 (You should be careful in this case that the @code{Test} calls do not
 lead to an infinite recursion, but this consideration is just the same
 as in Scheme code in general.)
+
+@node method* and define-method*
+@subsection method* and define-method*
+
+@code{method*} and @code{define-method*} are the GOOPS versions of
+@code{lambda*} and @code{define*}.
+
+@deffn {syntax} method* ([param@dots{}] @* @
+                [#:optional vardef@dots{}] @* @
+                [#:key  vardef@dots{} [#:allow-other-keys]] @* @
+                [#:rest var | . var]) @* @
+                body1 body2 @dots{}
+@sp 1
+Create a method which takes optional and/or keyword arguments specified
+with @code{#:optional} and @code{#:key}. @xref{lambda* and define*}.
+@var{param@dots{}} are ordinary method parameters as for @code{method}
+and @code{define-method}, i.e.@: either @var{var} or (@var{var}
+@var{typespec}).
+
+@fnindex define-method*
+@code{define-method*} is syntactic sugar for defining methods using
+@code{method*}. For example,
+
+@lisp
+(define-method* (foo (a <integer>) b #:optional c
+                     #:key (d 2) e
+                     #:rest f)
+  (list a b c d e f))
+@end lisp
+
+is a method with fixed arguments @var{a} of type @code{<integer>} and
+@var{b} of type @code{<top>}, optional argument @var{c}, keyword
+arguments @var{d}, with default value 2, and @var{e}, and rest argument
+@var{f}. A call
+
+@lisp
+(foo 1 'x #:d 3 'y)
+@end lisp
+
+will return
+
+@lisp
+(1 x #f 3 #f (#:d 3 y))
+@end lisp
+
+The values for @var{c} and @var{e} are @code{#f} since they have not
+been given in the call. The given keyword argument(s) are included in
+the rest argument, as for @code{define*}.
+@end deffn
+
+@menu
+* Type dispatch and redefinition for advanced argument handling::
+* next-method call in method*::
+* Advanced argument handling design choices::
+@end menu
+
+@node Type dispatch and redefinition for advanced argument handling
+@subsubsection Type dispatch and redefinition for advanced argument handling
+
+As in CLOS, GOOPS only does type dispatch on required arguments, also
+for method*. For a @code{method*} with keyword formals, the list of
+specializers becomes the same as for a corresponding @code{method} with
+the same number of required arguments and a tail/rest argument. For
+example, the list of specializers for
+
+@lisp
+(define-method* (foo (a <integer>) b #:optional c #:key d)
+  ...)
+@end lisp
+
+becomes
+
+@lisp
+(<integer> <top> . <top>)
+@end lisp
+
+This means that @code{(method (a <integer>) b) ...)} is more specialized
+than @code{(method (a <integer>) b #:optional c #:key d) ...)} and will
+come before the latter in the list of applicable methods.
+
+Two methods of the same generic function can't have the same
+specializers list. This means that if we do
+
+@lisp
+(define-method* (foo (a <integer>) b #:optional c)
+ ...)
+(define-method* (foo (a <integer>) b . rest)
+ ...)
+@end lisp
+
+the second @code{define-method*} will cause a redefinition such that the
+second method will replace the first.
+
+@node next-method call in method*
+@subsubsection next-method call in method*
+
+A @code{(next-method)} call in a @code{method*} will pass on all
+required, optional and rest arguments in the list of formals to the next
+less specialized method in the list of applicable methods, as well as
+any actual keyword arguments passed in the call to the @code{method*}.
+
+This has the following consequences for default values:
+
+@enumerate
+@item
+A an optional argument will shadow default values for optional arguments
+in the same position in less specialized methods. For example if
+@var{<B>} is a subclass of @var{<A>} and @var{b} an instance of
+@var{<B>},
+
+@lisp
+> (define-method* (foo (obj <A>) #:optional (c 1)) c)
+> (define-method* (foo (obj <B>) #:optional c)) (next-method))
+> (foo b)
+$1 = #f
+@end lisp
+
+The reason for this is that @var{c} will obtain the value @code{#f}
+already in the call to the second (most specialized, called first)
+method, and this value will be passed on by the @code{(next-method)}
+call.
+
+@item
+A keyword argument will not shadow a default value for the same keyword
+argument in less specialized methods. Example:
+
+@lisp
+> (define-method* (foo (obj <A>) #:key (c 1)) c)
+> (define-method* (foo (obj <B>) #:key c)) (next-method))
+> (foo b)
+$1 = 1
+@end lisp
+
+The reason for this is that the first (less specialized, called last)
+method will not be passed any keyword arguments from the call. In
+particular, it won't be passed @code{#:c VAL}, and it will therefore use
+its default value.
+@end enumerate
+
+The user can pass arguments to @code{next-method} to customize the
+behavior. In particular, if the current method uses advanced argument
+handling in such a way that it has keywords in its list of formals and
+the next, less specialized, method is an ordinary @code{method}, it will
+be necessary to pass arguments explicitly to @code{next-method} to
+``filter out'' any keywords.
+
+@node Advanced argument handling design choices
+@subsubsection Advanced argument handling design choices
+
+There are two design choices with regard to advanced argument handling
+in GOOPS methods which are worth explaining.
+
+First, there was the choice whether to add this functionality to
+@code{method} and @code{define-method} proper or to introduce new syntax
+@code{method*} and @code{define-method*}.
+
+There are several reasons why it could be better not to introduce new
+syntax. It would give a simpler API, with less cognitive load for the
+user, and a slightly simpler implementation (compared to providing the
+new syntax as well). It would align with the CLOS design choice where
+@code{defmethod} does support advanced argument handling.
+
+Eventually, we decided to introduce new syntax instead of extending the
+old for the following reasons:
+
+@enumerate
+@item
+It aligns with @code{lambda*} and @code{define*}.
+@item
+It is somewhat better at protecting backward compatibility.
+@item
+It preserves the conceptual simplicity of @code{method} and
+@code{define-method}.
+@item
+It makes it easier for other implementations (like guile-hoot) to choose
+to only provide the simpler functionality (through @code{method} and
+@code{define-method}).
+@end enumerate
+
+Second, we have chosen not to do type dispatch on optional or keyword
+arguments. Reasons include:
+
+@enumerate
+@item
+It strikes a reasonable balance with regards to the complexity of
+implementation (and cognitive load for the user).
+@item
+It aligns with the CLOS implementation which also likely had good
+reasons for this choice.
+@item
+Currently, we don't have clear ideas about a conceptual framework of
+rules governing type dispatch for advanced argument handling or how this
+would be implemented.
+@end enumerate
 
 @node Generic Function and Method Examples
 @subsection Generic Function and Method Examples
