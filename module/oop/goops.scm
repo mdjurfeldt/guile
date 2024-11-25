@@ -2221,30 +2221,72 @@ function."
           (()       (cons (reverse out) '()))
           (tail     (cons (reverse out) #'tail)))))
 
-    ;; keyword-formal-ids KEYWORD-FORMALS
+    ;; compute-keyword-formal-ids FORMALS KEYWORD-FORMALS
     ;;
-    ;; return a form corresponding to KEYWORD-FORMALS but with
-    ;; identifiers only (keywords removed) The value returned has the
-    ;; formals-ids format as described above.
+    ;; The main purpose of this beast is to compute the argument list
+    ;; for the actual next-method call for the case where the user calls
+    ;; (next-method). It is invoked in the case where we have keyword
+    ;; formals. Here we have to treat keyword arguments in a special way
+    ;; since we, similar to CLOS, only want to pass on the keyword
+    ;; arguments that were present in the call. We capture those using
+    ;; the rest argument. If not present, we introduce a rest formal.
     ;;
-    ;; The output is used in the next-method application form.
+    ;; FORMALS is the non-keyword part of the formal arguments.
+    ;; KEYWORD-FORMALS is the part of the formal arguments from the
+    ;; first keyword.
     ;;
-    (define (->keyword-formal-ids keyword-formals)
-      (let lp ((ls keyword-formals) (out '()))
+    ;; return three values:
+    ;;
+    ;; 1. #'lambda
+    ;; 2. the complete formals list
+    ;; 3. the argument list for next-method in formals-ids format as
+    ;;    described above (proper list in CAR, tail in CDR)
+    ;;
+    (define (compute-keyword-formal-ids formals keyword-formals)
+      (define (result formals formal-ids)
+        (values #'lambda* formals formal-ids))
+
+      (define (lp-key ls formals formal-ids)
+        (syntax-case ls ()
+          ((#:rest f)
+           (identifier? #'f)
+           (result (append (reverse formals) #'f)
+                   (cons (reverse formal-ids) #'f)))
+          (()
+           ;; No rest formal is present, so we need to introduce one.
+           (let ((rest-formal (car (generate-temporaries '(rest)))))
+             (result (append (reverse formals) rest-formal)
+                     (cons (reverse formal-ids) rest-formal))))
+          ((f . rest)
+           (lp-key #'rest
+                   (cons #'f formals)   ;keep
+                   formal-ids))         ;filter away
+          (tail
+           (result (append (reverse formals) #'tail)
+                   (cons (reverse formal-ids) #'tail)))))
+
+      (let ((reversed-formals (reverse formals)))
+        (let lp ((ls keyword-formals)
+                 (formals reversed-formals)
+                 (formal-ids reversed-formals))
         (syntax-case ls ()
           (((f val) . rest)
-           (lp #'rest out))
+           (lp #'rest (cons #'(f val) formals) (cons #'f formal-ids)))
+          ((#:optional . rest)
+           (lp #'rest (cons #:optional formals) formal-ids))
+          ((#:key . rest)
+           (lp-key #'rest (cons #:key formals) formal-ids))
           ((#:rest f)
-           (cons (reverse out) #'f))
+           (identifier? #'f)
+           (result (append (reverse formals) #'f)
+                   (cons (reverse formal-ids) #'f)))
           ((f . rest)
-           (keyword? (syntax->datum #'f))
-           (lp #'rest out))
-          ((f . rest)
-           (lp #'rest (cons #'f out)))
+           (lp #'rest (cons #'f formals) (cons #'f formal-ids)))
           (()
-           (cons (reverse out) '()))
+           (result (reverse formals) (cons (reverse formal-ids) '())))
           (tail
-           (cons (reverse out) #'tail)))))
+           (result (append (reverse formals) #'tail)
+                   (cons (reverse formal-ids) #'tail)))))))
 
     (define (compute-make-procedure formals keyword-formals body next-method)
       (syntax-case body ()
@@ -2255,14 +2297,7 @@ function."
                    (values #'lambda
                            formals
                            (->formal-ids formals))
-                   (values #'lambda*
-                           (append formals keyword-formals)
-                           (let ((keyword-formal-ids
-                                  ;; filter out the identifiers
-                                  (->keyword-formal-ids keyword-formals)))
-                             ;; input and result in formals-ids format
-                             (cons (append formals (car keyword-formal-ids))
-                                   (cdr keyword-formal-ids))))))
+                   (compute-keyword-formal-ids formals keyword-formals)))
            (lambda (lambda-type formals formal-ids)
              (with-syntax ((next-method next-method))
                (syntax-case formals ()
